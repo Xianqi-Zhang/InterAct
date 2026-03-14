@@ -1,5 +1,5 @@
-numpy==1.23.1
-torch==2.0.0
+#numpy==1.23.1
+#torch==2.0.0
 dataclasses>=0.6
 matplotlib==3.4.3
 spacy==3.7.4
@@ -15,11 +15,11 @@ Pillow
 imageio
 imageio-ffmpeg
 pyrender
-local-attention
+# local-attention
 smplx
 plyfile
 configer
-openmesh
+#openmesh
 boto3
 torchgeometry
 rtree

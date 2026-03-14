@@ -1,9 +1,16 @@
 import os
 import os.path
+import sys
 import numpy as np
 import torch
 from copy import copy
 import smplx
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEXT2INTERACTION_DIR = os.path.join(ROOT_DIR, "text2interaction")
+if TEXT2INTERACTION_DIR not in sys.path:
+    sys.path.insert(0, TEXT2INTERACTION_DIR)
+
 from render.mesh_utils import Mesh
 import trimesh
 from scipy.spatial.transform import Rotation
@@ -165,4 +172,3 @@ for sub_id in ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']:
         np.savez(os.path.join(MOTION_PATH, save_name ,'human.npz'), **human)
         np.savez(os.path.join(MOTION_PATH, save_name , 'object.npz'), **obj)
         print(f"Saved {save_name}")
-

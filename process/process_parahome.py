@@ -526,7 +526,7 @@ def process_single_sequence(seq_dir, output_root, verbose=False):
         return (seq_name, False, str(e))
 
 
-def copy_scan_directories(scan_source_dir, objects_target_dir):
+def copy_scan_directories(scan_source_dir, objects_target_dir, verbose=False):
     """
     Copy all .obj files from data/parahome/raw/scan/{object_name}/simplified/ 
     to data/parahome/objects/{object_name}/ (preserving filenames).
@@ -600,7 +600,7 @@ def copy_scan_directories(scan_source_dir, objects_target_dir):
         
         total_copied += copied
         total_skipped += skipped
-    if args.verbose:
+    if verbose:
         print(f"\nScan copy complete: {total_copied} files copied, {total_skipped} skipped, {not_found} objects not found")
 
 
@@ -748,10 +748,9 @@ Examples:
     
     # ==================== Part 2: Copy Scan Directories ====================
     
-    copy_scan_directories(scan_source_dir, objects_target_dir)
+    copy_scan_directories(scan_source_dir, objects_target_dir, verbose=args.verbose)
 
 
 
 if __name__ == "__main__":
     main()
-

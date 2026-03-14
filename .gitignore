@@ -1,0 +1,78 @@
+
+# Dataset
+*DATASET*
+DATASET_*
+data
+# assets
+baselines*
+!src/baselines/
+!src/baselines/**
+third_party
+outputs*
+output*
+checkpoints*
+*results*
+.mp4
+.avi
+.png
+.txt
+
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.npz
+
+
+LaTeX*
+
+# Test
+**/test*/
+**/*test/
+
+# Omniverse
+**/*.dmp
+**/.thumbs
+
+# Python
+.DS_Store
+**/*.egg-info/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*.pb
+
+# IDE
+**/.idea/
+**/.vscode/
+.vscode
+.claude/
+
+# Outputs
+**/_backup_checkpoints/*
+**/_backup_logs/*
+**/checkpoints/*
+**/outputs/*
+**/source/whole_body_tracking/whole_body_tracking.egg-info/*
+**/wandb/*
+**/runs/*
+**/logs/*
+**/logs_backup/*
+**/recordings/*
+**/output/*
+**/outputs/*
+**/videos/*
+**/wandb/*
+**/.neptune/*
+docker/artifacts/
+*.tmp
+
+# Isaac-Sim packman
+_isaac_sim*
+_repo
+_build
+.lastformat
+
+*.zarr
+*.zip
+**/resources/

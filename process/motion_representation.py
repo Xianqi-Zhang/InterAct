@@ -7,6 +7,8 @@ import smplx
 import trimesh
 from scipy.spatial.transform import Rotation
 from copy import copy
+import sys
+sys.path.append('.')
 from process.markerset import *
 from human_body_prior.body_model.body_model import BodyModel
 from pytorch3d.transforms import *

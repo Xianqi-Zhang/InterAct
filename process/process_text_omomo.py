@@ -13,7 +13,7 @@ for dataset in datasets:
 
     sequence_folder = os.path.join(dataset_path, 'sequences')
     sequence_seg_folder = os.path.join(dataset_path, 'sequences_seg')
-    omomo_text_folder = os.path.join(dataset_path, 'raw', 'omomo_text_anno_json_data')
+    omomo_text_folder = os.path.join(dataset_path, 'omomo_raw', 'omomo_text_anno_json_data')
     # read sequences
     json_names = os.listdir(omomo_text_folder)
     for json_name in json_names:

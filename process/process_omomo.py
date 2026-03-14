@@ -13,9 +13,9 @@ import shutil
 
 MOTION_PATH = './data/omomo/sequences'
 OBJECT_PATH = './data/omomo/objects'
-MOTION_PATH_RAW = './data/omomo/raw/train_diffusion_manip_seq_joints24.p'
-MOTION_PATH_RAW_TEST = './data/omomo/raw/test_diffusion_manip_seq_joints24.p'
-OBJECT_PATH_RAW = './data/omomo/raw/captured_objects'
+MOTION_PATH_RAW = './data/omomo/omomo_raw/train_diffusion_manip_seq_joints24.p'
+MOTION_PATH_RAW_TEST = './data/omomo/omomo_raw/test_diffusion_manip_seq_joints24.p'
+OBJECT_PATH_RAW = './data/omomo/omomo_raw/captured_objects'
 
 SMPLX_PATH = './models/smplx'
 SMPLH_PATH = './models/smplh'

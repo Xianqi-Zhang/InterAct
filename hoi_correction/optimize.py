@@ -1,6 +1,13 @@
 import os
 import numpy as np
 import torch
+
+import sys
+from pathlib import Path
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from hoi_correction.utils import vertex_normals
 from hoi_correction.loss import point2point_signed
 from hoi_correction.prior import *
@@ -97,17 +104,21 @@ LHAND_SMALL_INDEXES_DETAILED.append(np.load(f'./assets/smplx_hand_index/lhand_77
 
 ## NOT USED, Finger indexes
 RHAND_INDEXES=[]
-for i in range(6):
-    RHAND_INDEXES.append(np.load(f'./assets/smplx_hand_index/hand_778_{i}.npy'))
+for i in range(5):
+    RHAND_INDEXES.append(np.load(f'./assets/smplx_hand_index/hand_778_{i}_0.npy'))
+RHAND_INDEXES.append(np.load(f'./assets/smplx_hand_index/hand_778_5.npy'))
 RHAND_SMALL_INDEXES=[]
-for i in range(6):
-    RHAND_SMALL_INDEXES.append(np.load(f'./assets/smplx_hand_index/hand_778_small_{i}.npy'))
+for i in range(5):
+    RHAND_SMALL_INDEXES.append(np.load(f'./assets/smplx_hand_index/hand_778_small_{i}_0.npy'))
+RHAND_SMALL_INDEXES.append(np.load(f'./assets/smplx_hand_index/hand_778_small_5.npy'))
 LHAND_INDEXES=[]
-for i in range(6):
-    LHAND_INDEXES.append(np.load(f'./assets/smplx_hand_index/lhand_778_{i}.npy'))
+for i in range(5):
+    LHAND_INDEXES.append(np.load(f'./assets/smplx_hand_index/lhand_778_{i}_0.npy'))
+LHAND_INDEXES.append(np.load(f'./assets/smplx_hand_index/lhand_778_5.npy'))
 LHAND_SMALL_INDEXES=[]
-for i in range(6):
-    LHAND_SMALL_INDEXES.append(np.load(f'./assets/smplx_hand_index/lhand_778_small_{i}.npy'))
+for i in range(5):
+    LHAND_SMALL_INDEXES.append(np.load(f'./assets/smplx_hand_index/lhand_778_small_{i}_0.npy'))
+LHAND_SMALL_INDEXES.append(np.load(f'./assets/smplx_hand_index/lhand_778_small_5.npy'))
 
 
 
@@ -343,7 +354,15 @@ def restrict_angles(theta,theta_max,theta_min,mode,flag,alpha=0.01):
         return 1*loss_max+loss_min*1
 
 
-def optimize1(name,fname=''):
+def optimize1(
+    name,
+    fname='',
+    dataset_name='omomo',
+    max_iters=1000,
+    show_inner_pbar=False,
+    early_stop_patience=0,
+    early_stop_min_delta=1e-4,
+):
     human_npz_path=os.path.join(name,"human.npz")
     object_npz_path=os.path.join(name,"object.npz")
     with np.load(human_npz_path, allow_pickle=True) as f:
@@ -517,9 +536,11 @@ def optimize1(name,fname=''):
             
             ## CONTACT CALCULATION (HALF OF THE HAND THAT IS LIKELY TO CONTACT)
             for i in range(16):
-                
-                num_verts=HAND_INDEXES[i].shape[0]
-                sd_i=sbj2obj[:,HAND_INDEXES[i]]
+                idx_full = HAND_INDEXES[i]
+                idx_full = idx_full[(idx_full >= 0) & (idx_full < sbj2obj.shape[1])]
+                if idx_full.shape[0] == 0:
+                    continue
+                sd_i = sbj2obj[:, idx_full]
                 MASK_I=sd_i<thresh
                
                 whether_pene_time=torch.sum(MASK_I,dim=-1) ## T
@@ -534,9 +555,12 @@ def optimize1(name,fname=''):
                     loss_dist_o+=torch.sum(torch.abs(calc_dist)*mask_pen/(num_pen+1e-8))*2 #num_pen+1e-8)
 
                 OP_MASK_TIME=~MASK_TIME
-                # num_verts_small=HAND_SMALL_INDEXES[i].shape[0]
+                idx_small = HAND_SMALL_INDEXES[i]
+                idx_small = idx_small[(idx_small >= 0) & (idx_small < sbj2obj.shape[1])]
+                if idx_small.shape[0] == 0:
+                    continue
                 sbj2obj_mask_first=sbj2obj*WHETHER_TOUCH_L
-                sd_closer=sbj2obj_mask_first[OP_MASK_TIME][:,HAND_SMALL_INDEXES[i]]#/num_verts_small
+                sd_closer=sbj2obj_mask_first[OP_MASK_TIME][:,idx_small]#/num_verts_small
                 loss_touch+=5*torch.sum(torch.abs(sd_closer)**2)
                     
             euler_angles=hand_pose_rec[:,:,[2,1,0]]
@@ -645,7 +669,7 @@ def optimize1(name,fname=''):
         jtr=SBJ_OUTPUT.Jtr
         save_path='./save/omomo2_1500_mano_square_bigparameter_0.01_up'
         os.makedirs(save_path,exist_ok=True)
-        save_path=os.path.join(save_path,fn)
+        save_path=os.path.join(save_path,fname)
         
 
         loss_left,collision_loss_left,loss_dict_left=calc_loss(verts,jtr,hand_pose_rec[:,:15,:],epoch,0)
@@ -673,7 +697,12 @@ def optimize1(name,fname=''):
     
     optimizer=optim.Adam([hand_pose_rec],lr=0.001)
 
-    for ii in (tqdm(range(1000))):
+    iter_range = range(max_iters)
+    if show_inner_pbar:
+        iter_range = tqdm(iter_range, leave=False, desc=f"steps:{fname}")
+    best_loss = float("inf")
+    no_improve_steps = 0
+    for ii in iter_range:
         optimizer.zero_grad()
         loss, coll,loss_dict,endflag = calc_loss_common(hand_pose_rec,ii)
         if endflag:
@@ -682,11 +711,20 @@ def optimize1(name,fname=''):
         loss.backward(retain_graph=False)
         optimizer.step()
         tmp_smplhparams['hand_pose'] = copy.deepcopy(hand_pose_rec.detach())
+        loss_val = float(loss.detach().item())
+        if loss_val < (best_loss - early_stop_min_delta):
+            best_loss = loss_val
+            no_improve_steps = 0
+        else:
+            no_improve_steps += 1
+            if early_stop_patience > 0 and no_improve_steps >= early_stop_patience:
+                break
     
     
     hand_pose=tmp_smplhparams['hand_pose'].view(-1,90).detach().cpu().numpy()
-    export_file = f"./data/omomo_correct/sequences_canonical"
+    export_file = f"./data/{dataset_name}_correct/sequences_canonical"
     os.makedirs(export_file, exist_ok=True)
+    os.makedirs(os.path.join(export_file, fname), exist_ok=True)
     with np.load(human_npz_path, allow_pickle=True) as f:
         poses, betas, trans, gender = f['poses'], f['betas'], f['trans'], str(f['gender'])
     poses[:,-30*3:] = hand_pose
@@ -703,7 +741,15 @@ def parse_args():
     parser = argparse.ArgumentParser()        
    
     parser.add_argument('--number',type=int,default=0)
-    parser.add_argument('--dataset',type=str)
+    parser.add_argument('--dataset',type=str, default='omomo')
+    parser.add_argument('--max-iters', type=int, default=1000)
+    parser.add_argument('--inner-progress', action='store_true')
+    parser.add_argument('--start-idx', type=int, default=0)
+    parser.add_argument('--end-idx', type=int, default=-1)
+    parser.add_argument('--max-seqs', type=int, default=-1)
+    parser.add_argument('--skip-existing', action='store_true')
+    parser.add_argument('--early-stop-patience', type=int, default=80)
+    parser.add_argument('--early-stop-min-delta', type=float, default=1e-4)
     
 
     
@@ -712,16 +758,44 @@ def parse_args():
 
 if __name__ == '__main__':
     args=parse_args()
-    
-    root_path = 'data/omomo/sequences_canonical'
+    dataset_name = args.dataset
 
-    export_file = f"./data/omomo_correct/sequences_canonical"
-    for i,fn in tqdm(enumerate(sorted(os.listdir(root_path)))):
+    root_path = f'data/{dataset_name}/sequences_canonical'
+    export_file = f"./data/{dataset_name}_correct/sequences_canonical"
+    os.makedirs(export_file, exist_ok=True)
+    ok_count = 0
+    fail_count = 0
+    skip_count = 0
+    seq_names = sorted(os.listdir(root_path))
+    start_idx = max(0, args.start_idx)
+    end_idx = len(seq_names) if args.end_idx < 0 else min(len(seq_names), args.end_idx)
+    seq_names = seq_names[start_idx:end_idx]
+    if args.max_seqs > 0:
+        seq_names = seq_names[:args.max_seqs]
+    for fn in tqdm(seq_names, desc="Sequences"):
         try:
             name=os.path.join(root_path,fn)
-            optimize1(name,fn)
-        except:
-            pass
+            out_human = os.path.join(export_file, fn, 'human.npz')
+            if args.skip_existing and os.path.exists(out_human):
+                skip_count += 1
+                continue
+            optimize1(
+                name,
+                fn,
+                dataset_name,
+                max_iters=args.max_iters,
+                show_inner_pbar=args.inner_progress,
+                early_stop_patience=args.early_stop_patience,
+                early_stop_min_delta=args.early_stop_min_delta,
+            )
+            ok_count += 1
+        except Exception as e:
+            fail_count += 1
+            tqdm.write(f"[optimize.py] failed sequence={fn} error={repr(e)}")
+    print(
+        f"[optimize.py] done dataset={dataset_name} total={len(seq_names)} "
+        f"succeeded={ok_count} failed={fail_count} skipped={skip_count} output_root={export_file}"
+    )
 
         
         

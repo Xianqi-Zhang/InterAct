@@ -1,8 +1,17 @@
 import torch
 import torch.nn.functional as F
+import os
+import sys
+
+# Ensure InterAct's text2interaction package is importable when running
+# hoi_correction scripts directly.
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TEXT2INTERACTION_DIR = os.path.join(_ROOT_DIR, "text2interaction")
+if _TEXT2INTERACTION_DIR not in sys.path:
+    sys.path.insert(0, _TEXT2INTERACTION_DIR)
+
 from utils import vertex_normals
 from render.mesh_viz import visualize_body_obj
-from bone_lists import bone_list_behave, bone_list_omomo
 from loss import point2point_signed
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 to_cpu = lambda tensor: tensor.detach().cpu()
@@ -456,7 +465,9 @@ def optimize_poses(poses, betas, trans, gender, verts_obj_transformed, obj_norma
     sel_ref = torch.cat([reference_all_joint_poses[:, blk] for blk in sel_blocks], dim=1)
 
     wrist_optimizer = torch.optim.Adam([sel_params], lr=0.001)
-    wrist_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(wrist_optimizer, mode='min', factor=0.7, patience=150, verbose=True)
+    wrist_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        wrist_optimizer, mode='min', factor=0.7, patience=150
+    )
 
     # Stage 1 optimization loop
     stage1_epochs = num_epochs  # Use half of total epochs for stage 1

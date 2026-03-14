@@ -3,6 +3,12 @@ import numpy as np
 import torch
 import argparse
 
+import sys
+from pathlib import Path
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 import trimesh
 import pickle
 from hoi_correction.libsmpl.smplpytorch.pytorch.smpl_layer import SMPL_Layer
@@ -433,6 +439,8 @@ if __name__ == '__main__':
             name=os.path.join(root_path,fn)
             export_file = f"./data/{dataset_name}_correct/sequences_canonical/"
             os.makedirs(export_file, exist_ok=True)
+            seq_export_dir = os.path.join(export_file, fn)
+            os.makedirs(seq_export_dir, exist_ok=True)
             
             save_path_h = os.path.join(export_file, fn,'human.npz')
             save_path_o = os.path.join(export_file, fn,'object.npz')
@@ -444,6 +452,6 @@ if __name__ == '__main__':
                 pickle.dump(loss_dict,f)
            
            
-        except:
-            pass
+        except Exception as e:
+            print(f"[optimize_fullbody_intercap] skip {fn}: {e}")
   

@@ -1,6 +1,13 @@
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
+
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from hoi_correction.utils import vertex_normals
 import argparse
 
@@ -18,6 +25,7 @@ import copy
 from human_body_prior.body_model.body_model import BodyModel
 
 from tqdm import tqdm
+
 from hoi_correction.prior import *
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -349,7 +357,10 @@ def optimize1(name,dataset_name,smpl_type):
     delta_right = torch.norm(right_foot[1:, [0, 2]] - right_foot[:-1, [0, 2]], dim=1) + 1e-6
   
     
+    whether_touch = np.array([], dtype=np.int64)
+
     def calc_loss(body_rec, transl_rec, glo_rot_rec, obj_transl_rec, obj_rot_rec, hand_pose_rec, ratio,epoch,smpl_type,dataset_name): 
+        nonlocal whether_touch
         with torch.enable_grad():       
             verts,jtr,faces=forward_human(smpl_type,glo_rot_rec,body_rec,hand_pose_rec,beta,transl_rec)
            
@@ -398,21 +409,21 @@ def optimize1(name,dataset_name,smpl_type):
                 if torch.sum(MASK1)>0:
                     whether_touch=torch.argwhere(MASK1>0)[0].detach().cpu().numpy()
                 else:
-                    whether_touch=np.array([-100])
+                    whether_touch=np.array([], dtype=np.int64)
             elif epoch==130:
                 min_distance_mean_hand=torch.min(torch.abs(h2o_signed_mean),dim=1)[0]
                 MASK1=min_distance_mean_hand<=0.03
                 if torch.sum(MASK1)>0:
                     whether_touch=torch.argwhere(MASK1>0)[0].detach().cpu().numpy()
                 else:
-                    whether_touch=np.array([-100])
+                    whether_touch=np.array([], dtype=np.int64)
             elif epoch==160:
                 min_distance_mean_hand=torch.min(torch.abs(h2o_signed_mean),dim=1)[0]
                 MASK1=min_distance_mean_hand<=0.03
                 if torch.sum(MASK1)>0:
                     whether_touch=torch.argwhere(MASK1>0)[0].detach().cpu().numpy()
                 else:
-                    whether_touch=np.array([-100])
+                    whether_touch=np.array([], dtype=np.int64)
             
             loss_cc=torch.tensor(0.0).to(device)
             
@@ -421,7 +432,10 @@ def optimize1(name,dataset_name,smpl_type):
                 MIN_DIS=torch.min(torch.abs(h2o_signed_mean),dim=1)[0]
                 # mask_non_contact=(MIN_DIS>0.03).reshape(-1,1).float().detach()
                 
-                for arg_index in (whether_touch):
+                for arg_index in np.atleast_1d(whether_touch):
+                    arg_index = int(arg_index)
+                    if arg_index < 0 or arg_index + 1 >= T:
+                        continue
                     
                     hand_verts_T=verts[arg_index,:]
                     verts_obj_T=obj_points_pred_simple[arg_index].detach()
@@ -597,6 +611,8 @@ if __name__ == '__main__':
             name=os.path.join(root_path,fn)
             export_file = f"./data/{dataset_name}_correct_fullbody/sequences_canonical/"
             os.makedirs(export_file, exist_ok=True)
+            seq_export_dir = os.path.join(export_file, fn)
+            os.makedirs(seq_export_dir, exist_ok=True)
             save_path_h = os.path.join(export_file, fn,'human.npz')
             save_path_o = os.path.join(export_file, fn,'object.npz')
        
@@ -611,7 +627,7 @@ if __name__ == '__main__':
             # Could comment the following lines if this problem doesn't occur in your side.
             if 'chair_black' in name:
                 continue
-        except:
-            pass
+        except Exception as e:
+            print(f"[optimize_fullbody] skip {fn}: {e}")
 
         

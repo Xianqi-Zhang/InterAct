@@ -3,8 +3,13 @@ import numpy as np
 import torch
 torch.autograd.set_detect_anomaly(True)
 
-from hoi_correction.utils import  vertex_normals
+import sys
+from pathlib import Path
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
+from hoi_correction.utils import  vertex_normals
 from hoi_correction.loss import point2point_signed
 import smplx
 from hoi_correction.prior import *
@@ -309,23 +314,41 @@ def restrict_angles(theta,theta_max,theta_min,mode,flag,alpha=0.01):
         return 1*loss_max+loss_min*1
 
 
-def optimize1(name,fn,dataset_name):
+def optimize1(
+    name,
+    fn,
+    dataset_name,
+    max_iters=400,
+    show_inner_pbar=False,
+    early_stop_patience=0,
+    early_stop_min_delta=1e-4,
+):
     human_npz_path=os.path.join(name,"human.npz")
     object_npz_path=os.path.join(name,"object.npz")
     hdata = dict(np.load(human_npz_path,allow_pickle=True))
     odata = dict(np.load(object_npz_path,allow_pickle=True))
     
-    obj_trans=odata['obj_trans']
-    obj_angles=odata['obj_angle']
-    obj_name=odata['obj_name']
+    def _to_obj_name_str(v):
+        if isinstance(v, np.ndarray):
+            if v.shape == ():
+                return str(v.item())
+            if v.size == 1:
+                return str(v.reshape(-1)[0])
+            return str(v.reshape(-1)[0])
+        return str(v)
+
+    obj_trans = odata['obj_trans']
+    obj_angles = odata['obj_angle']
+    obj_name_raw = odata['obj_name'] if 'obj_name' in odata else odata['name']
+    obj_name = _to_obj_name_str(obj_name_raw)
     # human_npz_path=os.path.join(name,"human.npz")
     # with np.load(human_npz_path, allow_pickle=True) as f:
     betas ,gender = hdata['betas'], str(hdata['gender'])
-    trans=hdata['transl']
-    frame_times=trans.shape[0]
-    body_pose=hdata['body_pose']
-    hand_pose=hdata['hand_pose']
-    glo_rot=hdata['glo_rot']
+    trans_np = hdata['transl']
+    frame_times=trans_np.shape[0]
+    body_pose_np=hdata['body_pose']
+    hand_pose_np=hdata['hand_pose']
+    glo_rot_np=hdata['glo_rot']
     
     sbj_m=sbj_m_all[gender]
     
@@ -352,12 +375,12 @@ def optimize1(name,fn,dataset_name):
                                 
                                 'verts_sample': verts_sampled,
                                 }
-    frame_times=glo_rot.shape[0]
-    body_pose=torch.from_numpy(body_pose).float().to(device)
+    frame_times=glo_rot_np.shape[0]
+    body_pose=torch.from_numpy(body_pose_np).float().to(device)
     betas_tensor=torch.from_numpy(betas[None, :]).repeat(frame_times, 1).float().to(device)
-    trans_tensor=torch.from_numpy(trans).float().to(device)
-    root_tensor=torch.from_numpy(glo_rot).float().to(device)
-    hand_pose_tensor=torch.from_numpy(hand_pose).float().to(device)
+    trans_tensor=torch.from_numpy(trans_np).float().to(device)
+    root_tensor=torch.from_numpy(glo_rot_np).float().to(device)
+    hand_pose_tensor=torch.from_numpy(hand_pose_np).float().to(device)
     hand_pose_init=hand_pose_tensor.clone().detach()
     smplx_output = sbj_m(body_pose=body_pose,
                                 global_orient=root_tensor,
@@ -470,10 +493,14 @@ def optimize1(name,fn,dataset_name):
             loss_touch=torch.tensor(0.0).to(device)
 
             for i in range(16):
+                idx_small = HAND_SMALL_INDEXES[i]
+                idx_small = idx_small[(idx_small >= 0) & (idx_small < sbj2obj.shape[1])]
+                if idx_small.shape[0] == 0:
+                    continue
                 sbj2obj_mask_first=sbj2obj*WHETHER_TOUCH_L
-                sd_closer=sbj2obj_mask_first[:][:,HAND_SMALL_INDEXES[i]]
+                sd_closer=sbj2obj_mask_first[:][:,idx_small]
                 loss_touch+=4*torch.sum(torch.abs(sd_closer)/sbj2obj.shape[1])
-                sd_closer=sbj2obj[:][:,HAND_SMALL_INDEXES[i]]*Pene_mask.view(-1,1)
+                sd_closer=sbj2obj[:][:,idx_small]*Pene_mask.view(-1,1)
                 loss_dist_o+=2*torch.sum(torch.abs(sd_closer)/sbj2obj.shape[1])
                     
             ### Range of Motion Restrictions Loss
@@ -615,7 +642,12 @@ def optimize1(name,fn,dataset_name):
     
     optimizer=optim.Adam([hand_pose_rec],lr=0.005)
 
-    for ii in range(400):
+    iter_range = range(max_iters)
+    if show_inner_pbar:
+        iter_range = tqdm(iter_range, leave=False, desc=f"steps:{fn}")
+    best_loss = float("inf")
+    no_improve_steps = 0
+    for ii in iter_range:
         optimizer.zero_grad()
         loss, coll,loss_dict,endflag = calc_loss_common(hand_pose_rec,ii)
         if endflag==1:
@@ -629,23 +661,29 @@ def optimize1(name,fn,dataset_name):
 
         
         tmp_smplhparams['hand_pose'] = copy.deepcopy(hand_pose_rec.detach())
+        loss_val = float(loss.detach().item())
+        if loss_val < (best_loss - early_stop_min_delta):
+            best_loss = loss_val
+            no_improve_steps = 0
+        else:
+            no_improve_steps += 1
+            if early_stop_patience > 0 and no_improve_steps >= early_stop_patience:
+                break
     
     
     hand_pose=tmp_smplhparams['hand_pose'].view(-1,90).detach().cpu().numpy()
     export_file = f"./data/{dataset_name}_correct/sequences_canonical"
     os.makedirs(export_file, exist_ok=True)
-    # with np.load(human_npz_path, allow_pickle=True) as f:
-    #     poses, betas, trans, gender = f['poses'], f['betas'], f['trans'], str(f['gender'])
-    poses[:,-30*3:] = hand_pose
+    os.makedirs(os.path.join(export_file, fn), exist_ok=True)
     save_path_h = os.path.join(export_file, fn,'human.npz')
     
     
     T = hand_pose.shape[0]
-    poses = np.concatenate([glo_rot.reshape(T,-1),body_pose.reshape(T,-1),hand_pose],-1)
-    np.savez(save_path_h,**{'poses':poses,'betas':betas,'trans':trans,'gender':np.array(gender)})
+    poses = np.concatenate([glo_rot_np.reshape(T,-1), body_pose_np.reshape(T,-1), hand_pose], -1)
+    np.savez(save_path_h,**{'poses':poses,'betas':betas,'trans':trans_np,'gender':np.array(gender)})
     
     save_path_o = os.path.join(export_file, fn,'object.npz')
-    np.savez(save_path_o,**{'angles':obj_angles,'trans':obj_trans,'name':np.array(obj_name)})
+    np.savez(save_path_o, **{'angles': obj_angles, 'trans': obj_trans, 'name': np.array(obj_name)})
     
     
     
@@ -654,9 +692,18 @@ def optimize1(name,fn,dataset_name):
     return tmp_smplhparams, tmp_objparams
 def parse_args():
                    
-    parser = argparse.ArgumentParser()        
-    parser.add_argument('--dataset',type=str)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', type=str, default='behave')
     parser.add_argument('--number',type=int,default=0)
+    parser.add_argument('--max-iters', type=int, default=400)
+    parser.add_argument('--only-seq', type=str, default='')
+    parser.add_argument('--inner-progress', action='store_true')
+    parser.add_argument('--start-idx', type=int, default=0)
+    parser.add_argument('--end-idx', type=int, default=-1)
+    parser.add_argument('--max-seqs', type=int, default=-1)
+    parser.add_argument('--skip-existing', action='store_true')
+    parser.add_argument('--early-stop-patience', type=int, default=50)
+    parser.add_argument('--early-stop-min-delta', type=float, default=1e-4)
     args = parser.parse_args()                                      
     return args
 
@@ -665,16 +712,52 @@ if __name__ == '__main__':
     dataset_name=args.dataset
     
     
-    root_path=f'./data/{dataset_name}_correct_fullbody/sequences_canonical' 
+    root_path=f'./data/{dataset_name}_correct_fullbody/sequences_canonical'
     tb=f'./data/{dataset_name}_correct/sequences_canonical'
-    for i,fn in tqdm(enumerate(sorted(os.listdir(root_path)))):
+    os.makedirs(tb, exist_ok=True)
+    if not os.path.isdir(root_path):
+        raise FileNotFoundError(f"Input directory does not exist: {root_path}")
+
+    print(f"input_root={root_path}")
+    print(f"output_root={tb}")
+    ok_count = 0
+    fail_count = 0
+    seq_names = sorted(os.listdir(root_path))
+    start_idx = max(0, args.start_idx)
+    end_idx = len(seq_names) if args.end_idx < 0 else min(len(seq_names), args.end_idx)
+    seq_names = seq_names[start_idx:end_idx]
+    if args.max_seqs > 0:
+        seq_names = seq_names[:args.max_seqs]
+    if args.only_seq:
+        seq_names = [x for x in seq_names if x == args.only_seq]
+    pbar = tqdm(seq_names, desc="Sequences", dynamic_ncols=True)
+    skip_count = 0
+    for fn in pbar:
+        pbar.set_postfix_str(fn)
     
         name=os.path.join(root_path,fn)
         
-        os.makedirs(tb,exist_ok=True)
         try:
-            tmp_smplhparams, tmp_objparams=optimize1(0,name,False,fn,dataset_name)
-            
-        except:
-            pass
+            out_human = os.path.join(tb, fn, "human.npz")
+            if args.skip_existing and os.path.exists(out_human):
+                skip_count += 1
+                continue
+            tmp_smplhparams, tmp_objparams=optimize1(
+                name,
+                fn,
+                dataset_name,
+                max_iters=args.max_iters,
+                show_inner_pbar=args.inner_progress,
+                early_stop_patience=args.early_stop_patience,
+                early_stop_min_delta=args.early_stop_min_delta,
+            )
+            ok_count += 1
+        except Exception as e:
+            fail_count += 1
+            tqdm.write(f"[ERROR] Failed sequence '{fn}': {e}")
+    print(
+        f"[optimize_hand_behave.py] done dataset={dataset_name} "
+        f"total={len(seq_names)} succeeded={ok_count} failed={fail_count} "
+        f"skipped={skip_count} output_root={tb}"
+    )
         
