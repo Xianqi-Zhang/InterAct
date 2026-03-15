@@ -362,7 +362,14 @@ The **GRAB**, **BEHAVE**, **INTERCAP**, **ARCTIC** datasets are available for ac
     ```bash
     python process/process_text.py
     python process/process_text_omomo.py
+    python process/process_text_arctic.py
     ```
+    
+    Notes for ARCTIC:
+    - ARCTIC text annotations are placed under `data/arctic/description`.
+    - `process/process_text_arctic.py` converts these descriptions into segmented clips under `data/arctic/sequences_seg`.
+    - Some ARCTIC releases may not include all described subjects/sequences in raw motion files (for example hidden evaluation subjects such as `s03`, [Reference](https://github.com/zc-alexfan/arctic/issues/14)), so unmatched description entries are skipped.
+  
     
     After processing, the directory structure under [data/](data/) should include all sub-datasets, including:
     
@@ -417,6 +424,11 @@ The **GRAB**, **BEHAVE**, **INTERCAP**, **ARCTIC** datasets are available for ac
         ├── objects
         │   └── object_name
         │       └── base.obj
+        ├── sequences_seg
+        │   └── id
+        │       ├── human.npz
+        │       ├── object.npz
+        │       └── text.txt
         └── sequences
             └── id
                 ├── human.npz
@@ -432,6 +444,8 @@ The **GRAB**, **BEHAVE**, **INTERCAP**, **ARCTIC** datasets are available for ac
   # or multi_thread for speedup
   python process/canonicalize_human_multi_thread.py
   ```
+
+  For ARCTIC, run `process/process_text_arctic.py` first to generate `data/arctic/sequences_seg`.
 
 - Sample object keypoints:
 

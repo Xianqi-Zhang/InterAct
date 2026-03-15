@@ -1,4 +1,5 @@
 import os
+import argparse
 import os.path
 import numpy as np
 import torch
@@ -139,6 +140,12 @@ def visualize_smpl(name, MOTION_PATH, model_type, num_betas, use_pca=False):
     """
     with np.load(os.path.join(MOTION_PATH, name, 'human.npz'), allow_pickle=True) as f:
         poses, betas, trans, gender = f['poses'], f['betas'], f['trans'], str(f['gender'])
+    betas = np.asarray(betas, dtype=np.float32).reshape(-1)
+    # Align beta dims to model setting (ParaHome may contain 20 betas).
+    if betas.shape[0] < num_betas:
+        betas = np.pad(betas, (0, num_betas - betas.shape[0]), mode='constant')
+    elif betas.shape[0] > num_betas:
+        betas = betas[:num_betas]
         
     frame_times = poses.shape[0]
     if num_betas == 10:
@@ -560,18 +567,30 @@ def relative_representation_np(markers, rotation_matrix, obj_rot6D, obj_trans):
 
 # visualize markers motion of smpl model
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Extract motion representations.")
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default="behave,intercap,grab,omomo,arctic,parahome",
+        help="Comma-separated dataset names to process, e.g. 'arctic'.",
+    )
+    parser.add_argument("--data-root", type=str, default="./data", help="Root data directory.")
+    args = parser.parse_args()
     
     all_clips = 0
     all_frames = 0
     fid_r, fid_l = [61, 52, 53, 40, 34, 49, 40], [29, 30, 18, 19, 7, 2, 15]
-    datasets = ['behave','intercap', 'grab', 'omomo']
-    data_root = './data'
+    datasets = [x.strip() for x in args.datasets.split(",") if x.strip()]
+    data_root = args.data_root
     for dataset in datasets:
         print(f'Loading {dataset} ...')
         frame_num = 0
         dataset_path = os.path.join(data_root, dataset)
         MOTION_PATH = os.path.join(dataset_path, 'sequences_canonical')
         OBJECT_PATH = os.path.join(data_root, dataset, 'objects')
+        if not os.path.isdir(MOTION_PATH) or not os.path.isdir(OBJECT_PATH):
+            print(f"[WARN] Skip dataset={dataset}: missing sequences_canonical/objects directory.")
+            continue
         data_name = os.listdir(MOTION_PATH)
         for k, name in tqdm(enumerate(data_name)):
             
@@ -600,6 +619,15 @@ if __name__ == "__main__":
             elif dataset.upper() == 'OMOMO':
                 verts, faces = visualize_smpl(name, MOTION_PATH, 'smplx', 16)
                 markers = verts[:,markerset_smplx]
+            elif dataset.upper() == 'ARCTIC':
+                verts, faces = visualize_smpl(name, MOTION_PATH, 'smplx', 10)
+                markers = verts[:,markerset_smplx]
+            elif dataset.upper() == 'PARAHOME':
+                verts, faces = visualize_smpl(name, MOTION_PATH, 'smplx', 16)
+                markers = verts[:,markerset_smplx]
+            else:
+                print(f"[WARN] Unsupported dataset type for sequence={name} dataset={dataset}; skip.")
+                continue
            
             
            
@@ -609,7 +637,11 @@ if __name__ == "__main__":
             obj_rot6D = matrix_to_rotation_6d_np(angle_matrix)            
 
             obj_data = np.concatenate([obj_rot6D, obj_trans], axis=-1)
-            obj_points = np.load(os.path.join(OBJECT_PATH, obj_name, 'sample_points.npy'))
+            obj_points_path = os.path.join(OBJECT_PATH, obj_name, 'sample_points.npy')
+            if not os.path.exists(obj_points_path):
+                print(f"[WARN] Missing sample points for object={obj_name}; skip sequence={name}")
+                continue
+            obj_points = np.load(obj_points_path)
             data = get_representation_canonical(markers.detach().cpu().numpy(), obj_data, obj_points)
             
             

@@ -6,6 +6,7 @@ import pickle
 import argparse
 import numpy as np
 import torch
+import re
 from scipy.spatial.transform import Rotation
 from pathlib import Path
 from datetime import datetime
@@ -604,6 +605,156 @@ def copy_scan_directories(scan_source_dir, objects_target_dir, verbose=False):
         print(f"\nScan copy complete: {total_copied} files copied, {total_skipped} skipped, {not_found} objects not found")
 
 
+def _parse_text_annotations(text_path: Path):
+    if not text_path.exists():
+        return []
+    data = json.loads(text_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return []
+    parsed = []
+    for span, text in data.items():
+        parts = str(span).strip().split()
+        if len(parts) != 2:
+            continue
+        try:
+            start = int(parts[0])
+            end = int(parts[1])
+        except ValueError:
+            continue
+        if end <= start:
+            continue
+        parsed.append((start, end, str(text).strip()))
+    parsed.sort(key=lambda x: (x[0], x[1]))
+    return parsed
+
+
+def _parse_object_file_name(object_file: Path):
+    stem = object_file.stem
+    if not stem.startswith("object_"):
+        return None, None
+    body = stem[len("object_"):]
+    m = re.match(r"(.+?)_(base|part1|part2)$", body)
+    if m:
+        return m.group(1), m.group(2)
+    return body, "base"
+
+
+def _pick_primary_object(obj_data, start: int, end: int, text: str):
+    text_l = text.lower()
+    candidates = []
+    for key, info in obj_data.items():
+        obj_name = info["obj_name"]
+        score = float(np.linalg.norm(info["trans"][end - 1] - info["trans"][start]))
+        text_match = 1 if obj_name.lower() in text_l else 0
+        part_pref = 1 if info["part"] == "base" else 0
+        # Prefer text match first, then dynamic objects, then base part.
+        candidates.append((text_match, score, part_pref, key))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][-1]
+
+
+def build_parahome_sequences_canonical(
+    sequences_root: Path,
+    raw_seq_root: Path,
+    canonical_root: Path,
+    verbose: bool = False,
+):
+    canonical_root.mkdir(parents=True, exist_ok=True)
+    seq_dirs = sorted([p for p in sequences_root.iterdir() if p.is_dir()]) if sequences_root.exists() else []
+    total_clips = 0
+    total_seq = 0
+    skipped_seq = 0
+
+    for seq_dir in seq_dirs:
+        seq_name = seq_dir.name
+        human_path = seq_dir / "human.npz"
+        if not human_path.exists():
+            skipped_seq += 1
+            continue
+        raw_text = raw_seq_root / seq_name / "text_annotation.json"
+        clips = _parse_text_annotations(raw_text)
+        if not clips:
+            if verbose:
+                print(f"[WARN] No text annotations found for {seq_name}; skip.")
+            skipped_seq += 1
+            continue
+
+        human_npz = np.load(human_path, allow_pickle=True)
+        poses = human_npz["poses"]
+        betas = human_npz["betas"]
+        trans = human_npz["trans"]
+        gender = str(human_npz["gender"])
+        t_total = int(poses.shape[0])
+
+        object_files = sorted(seq_dir.glob("object_*.npz"))
+        obj_data = {}
+        for obj_file in object_files:
+            obj_name, part = _parse_object_file_name(obj_file)
+            if obj_name is None:
+                continue
+            z = np.load(obj_file, allow_pickle=True)
+            angles = z["angles"]
+            obj_trans = z["trans"]
+            name = str(z["name"]) if "name" in z else f"{obj_name}_{part}"
+            if angles.shape[0] != t_total or obj_trans.shape[0] != t_total:
+                continue
+            obj_data[obj_file.name] = {
+                "angles": angles,
+                "trans": obj_trans,
+                "name": name,
+                "obj_name": obj_name,
+                "part": part,
+            }
+        if not obj_data:
+            if verbose:
+                print(f"[WARN] No valid object tracks for {seq_name}; skip.")
+            skipped_seq += 1
+            continue
+
+        made = 0
+        for idx, (start_raw, end_raw, text) in enumerate(clips):
+            start = max(0, min(start_raw, t_total - 1))
+            end = max(start + 1, min(end_raw, t_total))
+            if end - start < 2:
+                continue
+            key = _pick_primary_object(obj_data, start, end, text)
+            if key is None:
+                continue
+            obj = obj_data[key]
+            clip_name = f"{seq_name}_{idx:04d}_{start:05d}_{end:05d}"
+            out_dir = canonical_root / clip_name
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            human_clip = {
+                "poses": poses[start:end].astype(np.float32),
+                "betas": np.asarray(betas, dtype=np.float32),
+                "trans": trans[start:end].astype(np.float32),
+                "gender": gender,
+            }
+            obj_clip = {
+                "angles": obj["angles"][start:end].astype(np.float32),
+                "trans": obj["trans"][start:end].astype(np.float32),
+                # Use base object name so downstream loaders can resolve
+                # data/parahome/objects/<name>/sample_points.npy.
+                "name": obj["obj_name"],
+            }
+
+            np.savez(out_dir / "human.npz", **human_clip)
+            np.savez(out_dir / "object.npz", **obj_clip)
+            (out_dir / "text.txt").write_text(text + "\n", encoding="utf-8")
+            (out_dir / "action.txt").write_text(text + "\n", encoding="utf-8")
+            made += 1
+
+        total_clips += made
+        total_seq += 1
+        if verbose:
+            print(f"[canonical] {seq_name}: {made} clips")
+
+    print(f"[canonical] done: sequences={total_seq}, clips={total_clips}, skipped_sequences={skipped_seq}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process ParaHome dataset: convert sequences and copy scan directories",
@@ -643,6 +794,16 @@ Examples:
         default=None,
         help="Number of parallel workers (default: CPU count)"
     )
+    parser.add_argument(
+        "--skip_canonical",
+        action="store_true",
+        help="Skip building data/parahome/sequences_canonical clips."
+    )
+    parser.add_argument(
+        "--canonical_only",
+        action="store_true",
+        help="Only build sequences_canonical from existing sequences and raw/seq annotations."
+    )
     
     args = parser.parse_args()
     
@@ -659,96 +820,109 @@ Examples:
     smplx_seq_dir = data_root / "raw" / "smplx_seq"
     output_root = data_root / "sequences"
     scan_source_dir = data_root / "raw" / "scan"
+    raw_seq_dir = data_root / "raw" / "seq"
     objects_target_dir = data_root / "objects"
+    canonical_root = data_root / "sequences_canonical"
     print("="*60)
     print("ParaHome Dataset Processing")
     print("="*60)
     print(f"SMPL-X sequences: {smplx_seq_dir}")
     print(f"Output sequences: {output_root}")
+    print(f"Output canonical: {canonical_root}")
     print(f"Scan source: {scan_source_dir}")
     print(f"Objects target: {objects_target_dir}")
     print()
     
     # ==================== Part 1: Convert Sequences ====================
     
-    # Find all sequences
-    sequences = find_all_sequences(smplx_seq_dir)
-    
-    if not sequences:
-        print("No sequences found!")
-    else:
-        total = len(sequences)
-        print(f"Found {total} sequences to convert\n")
+    if not args.canonical_only:
+        # Find all sequences
+        sequences = find_all_sequences(smplx_seq_dir)
         
-        # Create output directory
-        output_root.mkdir(parents=True, exist_ok=True)
-        
-        # Process sequences
-        success = 0
-        failed = 0
-        failed_sequences = []
-        
-        if num_workers == 1:
-            # Sequential processing
-            for idx, seq_dir in enumerate(sequences, 1):
-                seq_name = seq_dir.name
-                if args.verbose:
-                    print(f"[{idx}/{total}] Processing {seq_name}...")
-                
-                seq_name, is_success, error_msg = process_single_sequence(
-                    seq_dir, output_root, verbose=args.verbose
-                )
-                
-                if is_success:
-                    success += 1
-                else:
-                    failed += 1
-                    print(f"  ✗ Failed: {error_msg}")
-                    failed_sequences.append((seq_name, error_msg))
-                
-                # Print progress every 10 sequences
-                if idx % 10 == 0:
-                    print(f"\n--- Progress: {idx}/{total} ({100*idx//total}%) ---")
-                    print(f"    Success: {success}, Failed: {failed}\n")
+        if not sequences:
+            print("No sequences found!")
         else:
-            # Parallel processing
-            print(f"Processing in parallel with {num_workers} workers...\n")
+            total = len(sequences)
+            print(f"Found {total} sequences to convert\n")
             
-            # Create partial function with fixed arguments
-            process_func = partial(process_single_sequence, 
-                                 output_root=output_root, 
-                                 verbose=args.verbose)
+            # Create output directory
+            output_root.mkdir(parents=True, exist_ok=True)
             
-            # Process sequences in parallel
-            with Pool(processes=num_workers) as pool:
-                # Use imap for better progress tracking
-                results = pool.imap(process_func, sequences)
-                
-                for idx, (seq_name, is_success, error_msg) in enumerate(results, 1):
+            # Process sequences
+            success = 0
+            failed = 0
+            failed_sequences = []
+            
+            if num_workers == 1:
+                # Sequential processing
+                for idx, seq_dir in enumerate(sequences, 1):
+                    seq_name = seq_dir.name
+                    if args.verbose:
+                        print(f"[{idx}/{total}] Processing {seq_name}...")
+                    
+                    seq_name, is_success, error_msg = process_single_sequence(
+                        seq_dir, output_root, verbose=args.verbose
+                    )
+                    
                     if is_success:
                         success += 1
-                        print(f"[{idx}/{total}] ✓ {seq_name}")
                     else:
                         failed += 1
-                        print(f"[{idx}/{total}] ✗ {seq_name}: {error_msg}")
+                        print(f"  ✗ Failed: {error_msg}")
                         failed_sequences.append((seq_name, error_msg))
                     
                     # Print progress every 10 sequences
                     if idx % 10 == 0:
                         print(f"\n--- Progress: {idx}/{total} ({100*idx//total}%) ---")
                         print(f"    Success: {success}, Failed: {failed}\n")
+            else:
+                # Parallel processing
+                print(f"Processing in parallel with {num_workers} workers...\n")
+                
+                # Create partial function with fixed arguments
+                process_func = partial(process_single_sequence, 
+                                     output_root=output_root, 
+                                     verbose=args.verbose)
+                
+                # Process sequences in parallel
+                with Pool(processes=num_workers) as pool:
+                    # Use imap for better progress tracking
+                    results = pool.imap(process_func, sequences)
+                    
+                    for idx, (seq_name, is_success, error_msg) in enumerate(results, 1):
+                        if is_success:
+                            success += 1
+                            print(f"[{idx}/{total}] ✓ {seq_name}")
+                        else:
+                            failed += 1
+                            print(f"[{idx}/{total}] ✗ {seq_name}: {error_msg}")
+                            failed_sequences.append((seq_name, error_msg))
+                        
+                        # Print progress every 10 sequences
+                        if idx % 10 == 0:
+                            print(f"\n--- Progress: {idx}/{total} ({100*idx//total}%) ---")
+                            print(f"    Success: {success}, Failed: {failed}\n")
+            
+            # Summary
+            if args.verbose:
+                print(f"\n{'='*60}")
+                print("Sequence Conversion Complete!")
+                print(f"Total: {total}, Success: {success}, Failed: {failed}")
+                print(f"{'='*60}")
         
-        # Summary
-        if args.verbose:
-            print(f"\n{'='*60}")
-            print("Sequence Conversion Complete!")
-            print(f"Total: {total}, Success: {success}, Failed: {failed}")
-            print(f"{'='*60}")
-        
-    
-    # ==================== Part 2: Copy Scan Directories ====================
-    
-    copy_scan_directories(scan_source_dir, objects_target_dir, verbose=args.verbose)
+        # ==================== Part 2: Copy Scan Directories ====================
+        copy_scan_directories(scan_source_dir, objects_target_dir, verbose=args.verbose)
+    else:
+        print("[Info] canonical_only enabled: skipping sequence conversion and scan copy.")
+
+    # ==================== Part 3: Build Canonical Clip Sequences ====================
+    if not args.skip_canonical:
+        build_parahome_sequences_canonical(
+            sequences_root=output_root,
+            raw_seq_root=raw_seq_dir,
+            canonical_root=canonical_root,
+            verbose=args.verbose,
+        )
 
 
 

@@ -1,6 +1,7 @@
 # NOTE: Canonicalize the first human pose
 
 import os
+import argparse
 import os.path
 import numpy as np
 import torch
@@ -226,15 +227,42 @@ def visualize_grab(name, MOTION_PATH):
     return verts, faces, joints
 
 
+def resolve_obj_mesh(object_path, obj_name):
+    obj_dir = os.path.join(object_path, obj_name)
+    p1 = os.path.join(obj_dir, f"{obj_name}.obj")
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(obj_dir, "mesh.obj")
+    if os.path.exists(p2):
+        return p2
+    if os.path.isdir(obj_dir):
+        cands = [x for x in os.listdir(obj_dir) if x.endswith(".obj")]
+        if cands:
+            return os.path.join(obj_dir, cands[0])
+    return None
+
 
 if __name__ == "__main__":
-    datasets = ['behave', 'intercap', 'omomo', 'grab']
-    data_root = './data'
+    parser = argparse.ArgumentParser(description="Canonicalize human/object poses.")
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default="behave,intercap,omomo,grab,arctic",
+        help="Comma-separated dataset names to process, e.g. 'arctic'.",
+    )
+    parser.add_argument("--data-root", type=str, default="./data", help="Root data directory.")
+    args = parser.parse_args()
+
+    datasets = [x.strip() for x in args.datasets.split(",") if x.strip()]
+    data_root = args.data_root
     for dataset in datasets:
         dataset_path = os.path.join(data_root, dataset)
         MOTION_PATH = os.path.join(dataset_path, 'sequences_seg')
         NEW_MOTION_PATH = os.path.join(dataset_path, 'sequences_canonical')
         OBJECT_PATH = os.path.join(dataset_path, 'objects')
+        if not os.path.isdir(MOTION_PATH) or not os.path.isdir(OBJECT_PATH):
+            print(f"[WARN] Skip dataset={dataset}: missing sequences_seg/objects directory.")
+            continue
         data_name = os.listdir(MOTION_PATH)
         for name in data_name:
             try:
@@ -256,6 +284,9 @@ if __name__ == "__main__":
                     markers = verts[:,markerset_smplx]
                 elif dataset.upper() == 'OMOMO':
                     verts, faces, joints = visualize_smpl(name, MOTION_PATH, 'smplx', 16)
+                    markers = verts[:,markerset_smplx]
+                elif dataset.upper() == 'ARCTIC':
+                    verts, faces, joints = visualize_smpl(name, MOTION_PATH, 'smplx', 10)
                     markers = verts[:,markerset_smplx]
                 np.save(os.path.join(MOTION_PATH, name, 'markers.npy'), markers)
                 centroid = joints[0,0]
@@ -332,8 +363,14 @@ if __name__ == "__main__":
                     verts, faces, joints = visualize_smpl(name, NEW_MOTION_PATH, 'smplx', 10, 12)
                 elif dataset.upper() == 'OMOMO':
                     verts, faces, joints = visualize_smpl(name, NEW_MOTION_PATH, 'smplx', 16)
+                elif dataset.upper() == 'ARCTIC':
+                    verts, faces, joints = visualize_smpl(name, NEW_MOTION_PATH, 'smplx', 10)
                 
-                mesh_obj = trimesh.load(os.path.join(OBJECT_PATH, f"{obj_name}/{obj_name}.obj"), force='mesh')
+                mesh_path = resolve_obj_mesh(OBJECT_PATH, obj_name)
+                if mesh_path is None:
+                    print(f"[WARN] Missing mesh for object={obj_name}; skip sequence={name}")
+                    continue
+                mesh_obj = trimesh.load(mesh_path, force='mesh')
                 obj_verts, obj_faces = mesh_obj.vertices, mesh_obj.faces
                 new_obj_trans = np.array(new_obj_trans)
                 new_obj_angles = np.array(new_obj_angles)
